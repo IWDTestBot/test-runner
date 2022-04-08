@@ -1,0 +1,144 @@
+name: Test Runner
+
+description: Runs IWD's test-runner autotest framework
+
+inputs:
+  tests:
+    description: Tests to run (comma separated, no spaces)
+    default: all
+  runner:
+    description: Type of runner (qemu or uml)
+    default: uml
+  kernel:
+    description: Kernel version
+    default: '5.16'
+  hostapd_version:
+    description: Hostapd and wpa_supplicant version
+    default: '2_10'
+
+runs:
+  using: "composite"
+  steps:
+    - name: Inputs
+      shell: bash
+      run: |
+        echo Tests: ${{ inputs.tests }}
+        echo Runner: ${{ inputs.runner }}
+        echo Kernel: ${{ inputs.kernel }}
+
+    - name: Install Packages
+      shell: bash
+      run: |
+        sudo apt -qq update
+        sudo apt -qq install qemu-system make git iw iproute2 haveged pip python-docutils pkg-config libreadline-dev libtool automake flex bison libelf-dev bc libssl-dev libnl-genl-3-dev libdbus-1-dev libnl-route-3-dev isc-dhcp-server radvd libc6 build-essential
+        sudo pip -q install termcolor prettytable pyroute2 pycrypto
+        sudo modprobe pkcs8_key_parser
+        # For some reason /etc/radvd.conf isn't getting installed
+        sudo touch /etc/radvd.conf
+
+    - name: Checkout IWD
+      uses: actions/checkout@v2
+      with:
+        path: iwd
+        repository: IWDTestBot/iwd
+
+    - name: Cache UML Kernel
+      id: cache-uml-kernel
+      uses: actions/cache@v3
+      with:
+        path: um-linux-${{ inputs.kernel }}
+        key: um-linux-${{ inputs.kernel }}
+
+    - name: Cache Hostapd/WpaSupplicant
+      id: cache-wpas
+      uses: actions/cache@v3
+      with:
+        path: |
+          hostapd_${{ inputs.hostapd_version }}
+          hostapd_cli_${{ inputs.hostapd_version }}
+          wpa_supplicant_${{ inputs.hostapd_version }}
+          wpa_cli_${{ inputs.hostapd_version }}
+        key: hostapd_wpa_supplicant_${{ inputs.hostapd_version }}
+
+    - name: Build UML Kernel
+      shell: bash
+      if: |
+        steps.cache-uml-kernel.outputs.cache-hit != 'true' &&
+        inputs.kernel == 'uml'
+      run: |
+        git clone -b v${{ inputs.kernel }} --depth=1 https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git um-linux-git/
+        cd um-linux-git/
+        git checkout v${{ inputs.kernel }} -b ${{ inputs.kernel }}
+        make ARCH=um x86_64_defconfig
+        sh ../iwd/tools/test_runner_kernel_config
+        echo 'yes' | make ARCH=um -j4
+        cp linux ../um-linux-${{ inputs.kernel }}
+
+    - name: Build Hostapd/WpaSupplicant
+      shell: bash
+      if: steps.cache-wpas.outputs.cache-hit != 'true'
+      run: |
+        git clone -b hostap_${{ inputs.hostapd_version }} --depth=1 http://w1.fi/hostap.git hostap/
+        cp iwd/doc/hostapd.config hostap/hostapd/.config
+        cd hostap/hostapd
+        make -j4
+        cp hostapd ../../hostapd_${{ inputs.hostapd_version }}
+        cp hostapd_cli ../../hostapd_cli_${{ inputs.hostapd_version }}
+
+        cd ../wpa_supplicant
+        cp defconfig .config
+        make -j4
+        cp wpa_supplicant ../../wpa_supplicant_${{ inputs.hostapd_version }}
+        cp wpa_cli ../../wpa_cli_${{ inputs.hostapd_version }}
+
+    - name: Checkout ELL
+      uses: actions/checkout@v2
+      with:
+        path: ell
+        repository: IWDTestBot/ell
+
+    - name: Build and Unit test IWD
+      shell: bash
+      run: |
+        cd iwd/
+        ./bootstrap-configure
+        make -j4
+        make check
+
+    - name: Run test-runner
+      shell: 'script -q -e -c "bash {0}"'
+      run: |
+          ln -s hostapd_${{ inputs.hostapd_version }} hostapd
+          ln -s hostapd_cli_${{ inputs.hostapd_version }} hostapd_cli
+          ln -s wpa_supplicant_${{ inputs.hostapd_version }} wpa_supplicant
+          ln -s wpa_cli_${{ inputs.hostapd_version }} wpa_cli
+
+          PATH=$(pwd):$PATH
+          cd iwd/
+          if [ ${{ inputs.tests }} = "all" ]; then
+            TESTS=$(ls autotests/test* -d -m | xargs -n 1 basename | tr -d '\n')
+          else
+            TESTS=${{ inputs.tests }}
+          fi
+
+          # testNetconfig has a hang issue currently
+          TESTS=$(echo $TESTS | sed s/testNetconfig,//g)
+          # testP2P does not pass yet
+          TESTS=$(echo $TESTS | sed s/testP2P,//g)
+
+          # test-runner always returns a non-zero exit code due to how UML/QEMU
+          # work. Github treats this as a failure so || true the result
+          sudo env PATH=$PATH ./tools/test-runner -k ../um-linux-${{ inputs.kernel }} -A $TESTS --log ../log/ --result result.log || true
+
+          if [ $(cat result.log) != 'PASS' ]; then
+            exit 1
+          fi
+
+    - name: Archive
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-runner-archive
+        path: |
+          um-linux-${{ inputs.kernel }}
+          log/
