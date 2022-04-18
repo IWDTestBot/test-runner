@@ -16,10 +16,20 @@ inputs:
     description: Hostapd and wpa_supplicant version
     default: '2_10'
 
+outputs:
+  configure_iwd:
+    value: ${{ steps.final-results.outputs.configure }}
+  build_iwd:
+    value: ${{ steps.final-results.outputs.build }}
+  unit_iwd:
+    value: ${{ steps.final-results.outputs.unit }}
+  test_iwd:
+    value: ${{ steps.final-results.outputs.test }}
+
 runs:
   using: "composite"
   steps:
-    - name: Inputs
+    - name: Inputs/Outputs
       shell: bash
       run: |
         echo Tests: ${{ inputs.tests }}
@@ -35,12 +45,6 @@ runs:
         sudo modprobe pkcs8_key_parser
         # For some reason /etc/radvd.conf isn't getting installed
         sudo touch /etc/radvd.conf
-
-    - name: Checkout IWD
-      uses: actions/checkout@v2
-      with:
-        path: iwd
-        repository: IWDTestBot/iwd
 
     - name: Cache UML Kernel
       id: cache-uml-kernel
@@ -97,15 +101,29 @@ runs:
         path: ell
         repository: IWDTestBot/ell
 
-    - name: Build and Unit test IWD
+    - name: Configure IWD
+      id: configure-iwd
       shell: bash
       run: |
         cd iwd/
         ./bootstrap-configure
+
+    - name: Build IWD
+      id: build-iwd
+      shell: bash
+      run: |
+        cd iwd/
         make -j4
+
+    - name: Unit Test IWD
+      id: unit-iwd
+      shell: bash
+      run: |
+        cd iwd/
         make check
 
     - name: Run test-runner
+      id: test-iwd
       shell: 'script -q -e -c "bash {0}"'
       run: |
           ln -s hostapd_${{ inputs.hostapd_version }} hostapd
@@ -133,6 +151,16 @@ runs:
           if [ $(cat result.log) != 'PASS' ]; then
             exit 1
           fi
+
+    - name: Final Results
+      shell: bash
+      id: final-results
+      if: always()
+      run: |
+        echo ::set-output name=configure::${{ steps.configure-iwd.outcome }}
+        echo ::set-output name=build::${{ steps.build-iwd.outcome }}
+        echo ::set-output name=unit::${{ steps.unit-iwd.outcome }}
+        echo ::set-output name=test::${{ steps.test-iwd.outcome }}
 
     - name: Archive
       if: always()
