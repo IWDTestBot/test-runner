@@ -41,7 +41,7 @@ runs:
       run: |
         sudo apt -qq update
         sudo apt -qq install qemu-system make git iw iproute2 haveged pip python-docutils pkg-config libreadline-dev libtool automake flex bison libelf-dev bc libssl-dev libnl-genl-3-dev libdbus-1-dev libnl-route-3-dev isc-dhcp-server radvd libc6 build-essential
-        sudo pip -q install termcolor prettytable pyroute2 pycrypto
+        sudo pip -q install termcolor prettytable pyroute2 pycrypto scapy
         sudo modprobe pkcs8_key_parser
         # For some reason /etc/radvd.conf isn't getting installed
         sudo touch /etc/radvd.conf
